@@ -1,3 +1,19 @@
+# oh-my-claudecode v4.6.4: ESM/CJS Path Resolution Hotfix
+
+## Release Notes
+
+Hotfix for `getPackageDir()` path resolution in bundled CJS builds. Fixes the `import.meta?.url` check that was incorrectly transformed by esbuild.
+
+### Bug Fixes
+
+- **CJS Bundle Path Resolution**: Fixed `getPackageDir()` functions in multiple files to properly detect CJS bundle context.
+  - Reordered checks to prioritize `__dirname` (available in CJS) over `import.meta.url` (ESM)
+  - Fixed files: `src/agents/prompt-helpers.ts`, `src/agents/utils.ts`, `src/installer/index.ts`, `src/installer/hooks.ts`
+  - Fixed `src/hooks/bridge.ts` `isMainModule()` check to handle both ESM and CJS contexts
+  - Resolves #1314: `omc update` failing with `TypeError [ERR_INVALID_ARG_TYPE]`
+
+---
+
 # oh-my-claudecode v4.6.3: CLI import.meta.url Fix
 
 ## Release Notes
