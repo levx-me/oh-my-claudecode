@@ -29,7 +29,8 @@ import { readHudConfig } from './state.js';
 import { lockPathFor, withFileLock, type FileLockOptions } from '../lib/file-lock.js';
 
 // Cache configuration
-const CACHE_TTL_FAILURE_MS = 15 * 1000; // 15 seconds for failures
+const CACHE_TTL_FAILURE_MS = 15 * 1000; // 15 seconds for non-transient failures
+const CACHE_TTL_TRANSIENT_NETWORK_MS = 2 * 60 * 1000; // 2 minutes to avoid hammering transient API failures
 const MAX_RATE_LIMITED_BACKOFF_MS = 5 * 60 * 1000; // 5 minutes max for sustained 429s
 const API_TIMEOUT_MS = 10000;
 const MAX_STALE_DATA_MS = 15 * 60 * 1000; // 15 minutes — discard stale data after this
@@ -218,6 +219,10 @@ function getRateLimitedBackoffMs(pollIntervalMs: number, count: number): number 
   );
 }
 
+function getTransientNetworkBackoffMs(pollIntervalMs: number): number {
+  return Math.max(CACHE_TTL_TRANSIENT_NETWORK_MS, sanitizePollIntervalMs(pollIntervalMs));
+}
+
 function isCacheValid(cache: UsageCache, pollIntervalMs: number): boolean {
   if (cache.rateLimited) {
     if (cache.rateLimitedUntil != null) {
@@ -227,7 +232,11 @@ function isCacheValid(cache: UsageCache, pollIntervalMs: number): boolean {
     const count = cache.rateLimitedCount || 1;
     return Date.now() - cache.timestamp < getRateLimitedBackoffMs(pollIntervalMs, count);
   }
-  const ttl = cache.error ? CACHE_TTL_FAILURE_MS : sanitizePollIntervalMs(pollIntervalMs);
+  const ttl = cache.error
+    ? cache.errorReason === 'network'
+      ? getTransientNetworkBackoffMs(pollIntervalMs)
+      : CACHE_TTL_FAILURE_MS
+    : sanitizePollIntervalMs(pollIntervalMs);
   return Date.now() - cache.timestamp < ttl;
 }
 
