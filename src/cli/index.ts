@@ -56,6 +56,7 @@ import { launchCommand } from './launch.js';
 import { interopCommand } from './interop.js';
 import { askCommand, ASK_USAGE } from './ask.js';
 import { warnIfWin32 } from './win32-warning.js';
+import { autoresearchCommand, AUTORESEARCH_HELP } from './autoresearch.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -1330,6 +1331,20 @@ program
   .argument('[args...]', 'team subcommand arguments')
   .action(async (args: string[]) => {
     await teamCommand(args);
+  });
+
+/**
+ * Autoresearch command - thin-supervisor autoresearch with keep/discard/reset parity
+ */
+program
+  .command('autoresearch')
+  .description('Launch thin-supervisor autoresearch with keep/discard/reset parity')
+  .helpOption(false)
+  .allowUnknownOption(true)
+  .allowExcessArguments(true)
+  .argument('[args...]', 'autoresearch subcommand arguments')
+  .action(async (args: string[]) => {
+    await autoresearchCommand(args);
   });
 
 // Parse arguments
