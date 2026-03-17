@@ -99,7 +99,7 @@ interface AutoresearchInstructionLedgerSummary {
     description: string;
 }
 export declare function buildAutoresearchRunTag(date?: Date): string;
-export declare function assertResetSafeWorktree(worktreePath: string): void;
+export declare function assertResetSafeWorktree(worktreePath: string, allowedDirtyPaths?: readonly string[]): void;
 /**
  * Assert no exclusive mode is already active (ralph, ultrawork, autopilot).
  * Mirrors OMX assertModeStartAllowed semantics using OMC mode-state-io.

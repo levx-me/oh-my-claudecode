@@ -1,7 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { AutoresearchMissionContract } from '../contracts.js';
@@ -85,6 +84,27 @@ describe('autoresearch runtime parity extras', () => {
     }
   });
 
+
+  it('fresh prepare tolerates bootstrap dirt even when the worktree path is not normalized', async () => {
+    const repo = await initRepo();
+    try {
+      const contract = await makeContract(repo);
+      const worktreeRoot = `${repo.split('/').pop()}.omc-worktrees`;
+      const worktreePath = `${repo}/../${worktreeRoot}/autoresearch-missions-demo-20260314t021500z`;
+      execFileSync('git', ['worktree', 'add', '-b', 'autoresearch/missions-demo/20260314t021500z', worktreePath, 'HEAD'], {
+        cwd: repo,
+        stdio: 'ignore',
+      });
+      const worktreeContract = await materializeAutoresearchMissionToWorktree(contract, worktreePath);
+
+      await expect(
+        prepareAutoresearchRuntime(worktreeContract, repo, worktreePath, { runTag: '20260314T021500Z' }),
+      ).resolves.toMatchObject({ worktreePath });
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
   it('rejects concurrent fresh runs via the repo-root active-run lock', async () => {
     const repo = await initRepo();
     try {
@@ -145,6 +165,41 @@ describe('autoresearch runtime parity extras', () => {
       await expect(
         resumeAutoresearchRuntime(repo, runtime.runId),
       ).rejects.toThrow(/autoresearch_resume_missing_worktree/i);
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+
+  it('resume only tolerates the active run bootstrap dirt', async () => {
+    const repo = await initRepo();
+    try {
+      const contract = await makeContract(repo);
+      const worktreePath = join(repo, '..', `${repo.split('/').pop()}.omc-worktrees`, 'autoresearch-missions-demo-20260314t041500z');
+      execFileSync('git', ['worktree', 'add', '-b', 'autoresearch/missions-demo/20260314t041500z', worktreePath, 'HEAD'], {
+        cwd: repo,
+        stdio: 'ignore',
+      });
+      const worktreeContract = await materializeAutoresearchMissionToWorktree(contract, worktreePath);
+      const runtime = await prepareAutoresearchRuntime(worktreeContract, repo, worktreePath, { runTag: '20260314T041500Z' });
+      const statePath = join(repo, '.omc', 'state', 'autoresearch-state.json');
+      const idleState = {
+        schema_version: 1,
+        active: false,
+        run_id: runtime.runId,
+        mission_slug: contract.missionSlug,
+        repo_root: repo,
+        worktree_path: worktreePath,
+        status: 'idle',
+        updated_at: '2026-03-14T04:16:00.000Z',
+      };
+
+      await writeFile(statePath, `${JSON.stringify(idleState, null, 2)}\n`, 'utf-8');
+      await expect(resumeAutoresearchRuntime(repo, runtime.runId)).resolves.toMatchObject({ runId: runtime.runId });
+
+      await writeFile(statePath, `${JSON.stringify(idleState, null, 2)}\n`, 'utf-8');
+      await writeFile(join(worktreePath, 'missions', 'demo', 'extra.md'), 'unexpected\n', 'utf-8');
+      await expect(resumeAutoresearchRuntime(repo, runtime.runId)).rejects.toThrow(/autoresearch_reset_requires_clean_worktree/i);
     } finally {
       await rm(repo, { recursive: true, force: true });
     }
@@ -255,4 +310,96 @@ describe('autoresearch runtime parity extras', () => {
       await rm(repo, { recursive: true, force: true });
     }
   });
+
+  it('discard reset tolerates only exact bootstrap dirt', async () => {
+    const repo = await initRepo();
+    try {
+      const contract = await makeContract(repo);
+      const worktreePath = join(repo, '..', `${repo.split('/').pop()}.omc-worktrees`, 'autoresearch-missions-demo-20260314t061500z');
+      execFileSync('git', ['worktree', 'add', '-b', 'autoresearch/missions-demo/20260314t061500z', worktreePath, 'HEAD'], {
+        cwd: repo,
+        stdio: 'ignore',
+      });
+      const worktreeContract = await materializeAutoresearchMissionToWorktree(contract, worktreePath);
+      const runtime = await prepareAutoresearchRuntime(worktreeContract, repo, worktreePath, { runTag: '20260314T061500Z' });
+
+      await writeFile(join(worktreePath, 'score.txt'), '0\n', 'utf-8');
+      execFileSync('git', ['add', 'score.txt'], { cwd: worktreePath, stdio: 'ignore' });
+      execFileSync('git', ['commit', '-m', 'worse score'], { cwd: worktreePath, stdio: 'ignore' });
+      const worseCommit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: worktreePath, encoding: 'utf-8' }).trim();
+
+      let manifest = await loadAutoresearchRunManifest(repo, runtime.runId);
+      await writeFile(runtime.candidateFile, `${JSON.stringify({
+        status: 'candidate',
+        candidate_commit: worseCommit,
+        base_commit: manifest.last_kept_commit,
+        description: 'worse score',
+        notes: ['discard should reset safely'],
+        created_at: '2026-03-14T06:15:00.000Z',
+      }, null, 2)}\n`, 'utf-8');
+      await expect(processAutoresearchCandidate(worktreeContract, manifest, repo)).resolves.toBe('discard');
+
+      await writeFile(join(worktreePath, 'score.txt'), '0\n', 'utf-8');
+      execFileSync('git', ['add', 'score.txt'], { cwd: worktreePath, stdio: 'ignore' });
+      execFileSync('git', ['commit', '-m', 'worse score again'], { cwd: worktreePath, stdio: 'ignore' });
+      const worseAgainCommit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: worktreePath, encoding: 'utf-8' }).trim();
+      await writeFile(join(worktreePath, 'missions', 'demo', 'extra.md'), 'unexpected\n', 'utf-8');
+
+      manifest = await loadAutoresearchRunManifest(repo, runtime.runId);
+      await writeFile(runtime.candidateFile, `${JSON.stringify({
+        status: 'candidate',
+        candidate_commit: worseAgainCommit,
+        base_commit: manifest.last_kept_commit,
+        description: 'worse again',
+        notes: ['discard should fail on unrelated dirt'],
+        created_at: '2026-03-14T06:16:00.000Z',
+      }, null, 2)}\n`, 'utf-8');
+      await expect(processAutoresearchCandidate(worktreeContract, manifest, repo)).rejects.toThrow(/autoresearch_reset_requires_clean_worktree/i);
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('interrupted handling tolerates only exact bootstrap dirt', async () => {
+    const repo = await initRepo();
+    try {
+      const contract = await makeContract(repo);
+      const worktreePath = join(repo, '..', `${repo.split('/').pop()}.omc-worktrees`, 'autoresearch-missions-demo-20260314t061700z');
+      execFileSync('git', ['worktree', 'add', '-b', 'autoresearch/missions-demo/20260314t061700z', worktreePath, 'HEAD'], {
+        cwd: repo,
+        stdio: 'ignore',
+      });
+      const worktreeContract = await materializeAutoresearchMissionToWorktree(contract, worktreePath);
+      const runtime = await prepareAutoresearchRuntime(worktreeContract, repo, worktreePath, { runTag: '20260314T061700Z' });
+
+      let manifest = await loadAutoresearchRunManifest(repo, runtime.runId);
+      await writeFile(runtime.candidateFile, `${JSON.stringify({
+        status: 'interrupted',
+        candidate_commit: null,
+        base_commit: manifest.last_kept_commit,
+        description: 'interrupted cleanly',
+        notes: ['bootstrap dirt only'],
+        created_at: '2026-03-14T06:17:00.000Z',
+      }, null, 2)}\n`, 'utf-8');
+      await expect(processAutoresearchCandidate(worktreeContract, manifest, repo)).resolves.toBe('interrupted');
+
+      await writeFile(join(worktreePath, 'missions', 'demo', 'extra.md'), 'unexpected\n', 'utf-8');
+      manifest = await loadAutoresearchRunManifest(repo, runtime.runId);
+      await writeFile(runtime.candidateFile, `${JSON.stringify({
+        status: 'interrupted',
+        candidate_commit: null,
+        base_commit: manifest.last_kept_commit,
+        description: 'interrupted with unrelated dirt',
+        notes: ['should fail'],
+        created_at: '2026-03-14T06:18:00.000Z',
+      }, null, 2)}\n`, 'utf-8');
+      await expect(processAutoresearchCandidate(worktreeContract, manifest, repo)).resolves.toBe('error');
+      const failedManifest = await loadAutoresearchRunManifest(repo, runtime.runId);
+      expect(failedManifest.status).toBe('failed');
+      expect(failedManifest.stop_reason).toMatch(/interrupted dirty worktree requires operator intervention/i);
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
 });

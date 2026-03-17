@@ -1,11 +1,10 @@
 import { execFileSync, spawnSync } from 'child_process';
 import { existsSync } from 'fs';
 import { mkdir, readFile, symlink, writeFile } from 'fs/promises';
-import { dirname, join } from 'path';
+import { dirname, join, resolve } from 'path';
 import {
   readModeState,
   writeModeState,
-  clearModeStateFile,
 } from '../lib/mode-state-io.js';
 import {
   parseEvaluatorResult,
@@ -249,18 +248,50 @@ function gitStatusLines(worktreePath: string): string[] {
     .filter(Boolean);
 }
 
-function isAllowedRuntimeDirtyLine(line: string): boolean {
-  const trimmed = line.trim();
-  if (trimmed.length < 4) return false;
-  const path = trimmed.slice(3).trim();
-  return trimmed.startsWith('?? ') && AUTORESEARCH_WORKTREE_EXCLUDES.some((exclude) => exclude.endsWith('/')
+function normalizeGitStatusPath(path: string): string {
+  return path.startsWith('\"') && path.endsWith('\"')
+    ? path.slice(1, -1).replace(/\\\"/g, '\"')
+    : path;
+}
+
+function isAllowedRuntimeDirtyPath(path: string): boolean {
+  return AUTORESEARCH_WORKTREE_EXCLUDES.some((exclude) => exclude.endsWith('/')
     ? path.startsWith(exclude) || path === exclude.slice(0, -1)
     : path === exclude);
 }
 
-export function assertResetSafeWorktree(worktreePath: string): void {
+function allowedBootstrapDirtyPaths(
+  worktreePath: string,
+  allowedDirtyPaths: readonly string[] = [],
+): Set<string> {
+  const normalizedWorktreePath = resolve(worktreePath);
+  return new Set(
+    allowedDirtyPaths
+      .map((path) => {
+        const normalizedPath = resolve(path);
+        return normalizedPath.startsWith(`${normalizedWorktreePath}/`)
+          ? normalizedPath.slice(normalizedWorktreePath.length + 1)
+          : null;
+      })
+      .filter((path): path is string => Boolean(path)),
+  );
+}
+
+function isAllowedRuntimeDirtyLine(
+  line: string,
+  allowedBootstrapPaths: ReadonlySet<string>,
+): boolean {
+  const trimmed = line.trim();
+  if (trimmed.length < 4) return false;
+  const path = normalizeGitStatusPath(trimmed.slice(3).trim());
+  if (!trimmed.startsWith('?? ')) return false;
+  return isAllowedRuntimeDirtyPath(path) || allowedBootstrapPaths.has(path);
+}
+
+export function assertResetSafeWorktree(worktreePath: string, allowedDirtyPaths: readonly string[] = []): void {
   const lines = gitStatusLines(worktreePath);
-  const blocking = lines.filter((line) => !isAllowedRuntimeDirtyLine(line));
+  const allowedBootstrapPaths = allowedBootstrapDirtyPaths(worktreePath, allowedDirtyPaths);
+  const blocking = lines.filter((line) => !isAllowedRuntimeDirtyLine(line, allowedBootstrapPaths));
   if (blocking.length === 0) return;
   throw new Error(`autoresearch_reset_requires_clean_worktree:${worktreePath}:${blocking.join(' | ')}`);
 }
@@ -825,7 +856,7 @@ export async function prepareAutoresearchRuntime(
   await assertAutoresearchLockAvailable(projectRoot);
   await ensureRuntimeExcludes(worktreePath);
   await ensureAutoresearchWorktreeDependencies(projectRoot, worktreePath);
-  assertResetSafeWorktree(worktreePath);
+  assertResetSafeWorktree(worktreePath, [contract.missionFile, contract.sandboxFile]);
 
   const runTag = options.runTag || buildAutoresearchRunTag();
   const runId = buildRunId(contract.missionSlug, runTag);
@@ -966,7 +997,7 @@ export async function resumeAutoresearchRuntime(projectRoot: string, runId: stri
   }
   await ensureRuntimeExcludes(manifest.worktree_path);
   await ensureAutoresearchWorktreeDependencies(projectRoot, manifest.worktree_path);
-  assertResetSafeWorktree(manifest.worktree_path);
+  assertResetSafeWorktree(manifest.worktree_path, [manifest.mission_file, manifest.sandbox_file]);
   startAutoresearchMode(`autoresearch resume ${runId}`, projectRoot);
   await activateAutoresearchRun(manifest);
   updateAutoresearchMode({
@@ -1074,7 +1105,7 @@ async function finalizeRun(
 }
 
 function resetToLastKeptCommit(manifest: AutoresearchRunManifest): void {
-  assertResetSafeWorktree(manifest.worktree_path);
+  assertResetSafeWorktree(manifest.worktree_path, [manifest.mission_file, manifest.sandbox_file]);
   requireGitSuccess(manifest.worktree_path, ['reset', '--hard', manifest.last_kept_commit]);
 }
 
@@ -1221,7 +1252,7 @@ export async function processAutoresearchCandidate(
 
   if (candidate.status === 'interrupted') {
     try {
-      assertResetSafeWorktree(manifest.worktree_path);
+      assertResetSafeWorktree(manifest.worktree_path, [manifest.mission_file, manifest.sandbox_file]);
     } catch {
       await finalizeRun(manifest, projectRoot, { status: 'failed', stopReason: 'interrupted dirty worktree requires operator intervention' });
       return 'error';
