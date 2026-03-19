@@ -64,6 +64,15 @@ const SAFE_HEREDOC_PATTERNS = [
   /^git tag\b/,
 ];
 
+const GIT_NO_VERIFY_PATTERN = /(?:^|\s)--no-verify(?:\s|$)/;
+const GIT_NO_VERIFY_COMMAND_PATTERN = /^git\s+(commit|push)\b/;
+
+export function isGitNoVerifyBypass(command: string): boolean {
+  const trimmed = command.trim();
+
+  return GIT_NO_VERIFY_COMMAND_PATTERN.test(trimmed) && GIT_NO_VERIFY_PATTERN.test(trimmed);
+}
+
 const BACKGROUND_MUTATION_SUBAGENTS = new Set([
   'executor',
   'designer',
@@ -359,6 +368,19 @@ export function processPermissionRequest(input: PermissionRequestInput): HookOut
   }
 
   const shouldAskBashPermission = hasClaudePermissionAsk(input.cwd, 'Bash', command);
+
+  if (isGitNoVerifyBypass(command)) {
+    return {
+      continue: true,
+      hookSpecificOutput: {
+        hookEventName: 'PermissionRequest',
+        decision: {
+          behavior: 'deny',
+          reason: 'Git hook bypass via `--no-verify` is not allowed for agent-driven git commands. Remove `--no-verify` and retry.',
+        },
+      },
+    };
+  }
 
   // Auto-allow safe commands
   if (!shouldAskBashPermission && isSafeCommand(command)) {
