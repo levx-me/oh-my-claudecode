@@ -45,6 +45,7 @@ import {
 import { doctorConflictsCommand } from './commands/doctor-conflicts.js';
 import { sessionSearchCommand } from './commands/session-search.js';
 import { teamCommand } from './commands/team.js';
+import { serveCommand } from './commands/serve.js';
 import { ralphthonCommand } from './commands/ralphthon.js';
 import {
   teleportCommand,
@@ -1334,6 +1335,19 @@ program
   .argument('[args...]', 'team subcommand arguments')
   .action(async (args: string[]) => {
     await teamCommand(args);
+  });
+
+/**
+ * Serve command - HTTP server for team state streaming via SSE
+ */
+program
+  .command('serve')
+  .description('Start HTTP server for team state streaming')
+  .option('-p, --port <port>', 'Port to listen on', '3001')
+  .option('--host <host>', 'Host to bind to', 'localhost')
+  .allowUnknownOption()
+  .action(async (_opts, cmd) => {
+    await serveCommand((cmd as { parent?: { rawArgs?: string[] } }).parent?.rawArgs?.slice(3) ?? []);
   });
 
 /**
